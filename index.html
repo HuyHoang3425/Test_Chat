@@ -186,6 +186,32 @@
             display: flex;
             flex-direction: column;
             gap: 15px;
+            position: relative;
+        }
+        
+        /* Loading indicator cho lazy loading */
+        .load-more-indicator {
+            display: none;
+            text-align: center;
+            padding: 15px;
+            color: #667eea;
+            font-size: 14px;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        
+        .load-more-indicator.show {
+            display: flex;
+        }
+        
+        .mini-spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
         }
         
         .message {
@@ -437,6 +463,10 @@
                 <button class="logout-btn" id="logoutBtn">Đăng xuất</button>
             </div>
             <div class="chat-messages" id="chatMessages">
+                <div class="load-more-indicator" id="loadMoreIndicator">
+                    <div class="mini-spinner"></div>
+                    <span>Đang tải tin nhắn cũ...</span>
+                </div>
                 <div class="no-messages">Chưa có tin nhắn nào</div>
             </div>
             <div class="typing-indicator" id="typingIndicator">
@@ -468,6 +498,11 @@
         let messages = [];
         let typingTimeout;
         let isTyping = false;
+        
+        // Lazy loading variables
+        let isLoadingMore = false;
+        let hasMoreMessages = true;
+        let oldestMessageTime = null;
 
         // Cookie utilities
         function setCookie(name, value, days = 7) {
@@ -498,7 +533,6 @@
                 'Content-Type': 'application/json',
             };
             
-            // Chỉ thêm Authorization header khi đã có token và không phải API login
             if (token && !url.includes('/auth/login')) {
                 defaultHeaders['Authorization'] = `Bearer ${token}`;
             }
@@ -513,13 +547,7 @@
 
             try {
                 const response = await fetch(url, config);
-                
-                // Log để debug
-                console.log('Response status:', response.status);
-                console.log('Response headers:', response.headers);
-                
                 const data = await response.json();
-                console.log('Response data:', data);
                 
                 if (!response.ok) {
                     throw new Error(data.message || `HTTP ${response.status}: ${response.statusText}`);
@@ -546,7 +574,6 @@
             const targetScreen = document.getElementById(screenId);
             if (targetScreen) {
                 targetScreen.classList.remove('hidden');
-                // Đặc biệt cho chat screen, cần set display flex
                 if (screenId === 'chatScreen') {
                     targetScreen.style.display = 'flex';
                 }
@@ -578,7 +605,6 @@
                 console.log('Login response:', data);
                 
                 if (response.ok) {
-                    // Token nằm trực tiếp trong data.data
                     const token = data.data;
                     if (token) {
                         setCookie('token', token);
@@ -604,14 +630,93 @@
             }
         }
 
-        async function getMessages() {
+        // Enhanced getMessages function with lazy loading support
+        async function getMessages(beforeTime = null, limit = 20) {
             try {
-                const data = await apiCall(`https://love-story-app.onrender.com/api/v1/chat/${roomChatId}`);
+                let url = `https://love-story-app.onrender.com/api/v1/chat/${roomChatId}?limit=${limit}`;
+                if (beforeTime) {
+                    url += `&before=${beforeTime}`;
+                }
+                const data = await apiCall(url);
                 return data;
             } catch (error) {
                 console.error('Error getting messages:', error);
                 return { data: { messages: [] } };
             }
+        }
+
+        // Lazy loading functions
+        async function loadMoreMessages() {
+            if (isLoadingMore || !hasMoreMessages || !oldestMessageTime) {
+                return;
+            }
+
+            isLoadingMore = true;
+            showLoadMoreIndicator();
+
+            try {
+                const messagesData = await getMessages(oldestMessageTime);
+                console.log('Loaded more messages:', messagesData);
+
+                if (messagesData.data && messagesData.data.messages && messagesData.data.messages.length > 0) {
+                    const newMessages = messagesData.data.messages;
+                    
+                    // Lưu vị trí scroll hiện tại
+                    const messagesContainer = document.getElementById('chatMessages');
+                    const scrollHeight = messagesContainer.scrollHeight;
+                    const scrollTop = messagesContainer.scrollTop;
+                    
+                    // Thêm tin nhắn cũ vào đầu danh sách
+                    newMessages.forEach(message => {
+                        addMessageToChat(message, true); // true = prepend
+                    });
+                    
+                    // Cập nhật oldestMessageTime
+                    if (newMessages.length > 0) {
+                        oldestMessageTime = newMessages[0].sentAt;
+                    }
+                    
+                    // Khôi phục vị trí scroll
+                    const newScrollHeight = messagesContainer.scrollHeight;
+                    messagesContainer.scrollTop = scrollTop + (newScrollHeight - scrollHeight);
+                    
+                    // Kiểm tra có còn tin nhắn để tải không
+                    if (newMessages.length < 20) {
+                        hasMoreMessages = false;
+                    }
+                } else {
+                    hasMoreMessages = false;
+                }
+            } catch (error) {
+                console.error('Error loading more messages:', error);
+            } finally {
+                isLoadingMore = false;
+                hideLoadMoreIndicator();
+            }
+        }
+
+        function showLoadMoreIndicator() {
+            document.getElementById('loadMoreIndicator').classList.add('show');
+        }
+
+        function hideLoadMoreIndicator() {
+            document.getElementById('loadMoreIndicator').classList.remove('show');
+        }
+
+        function setupScrollListener() {
+            const messagesContainer = document.getElementById('chatMessages');
+            let scrollTimeout;
+
+            messagesContainer.addEventListener('scroll', () => {
+                // Debounce scroll event
+                clearTimeout(scrollTimeout);
+                scrollTimeout = setTimeout(() => {
+                    // Kiểm tra nếu đã cuộn gần đến đầu container
+                    if (messagesContainer.scrollTop <= 100 && hasMoreMessages && !isLoadingMore) {
+                        loadMoreMessages();
+                    }
+                }, 100);
+            });
         }
 
         // Chat functions
@@ -626,7 +731,6 @@
             socket.on('connect', () => {
                 console.log('Connected to server');
                 console.log('Socket ID:', socket.id);
-                // Gửi roomChatId để server có thể join room
                 socket.emit('JOIN_ROOM', { roomChatId: roomChatId });
                 updateConnectionStatus(true);
             });
@@ -639,7 +743,6 @@
             socket.on('SERVER_RETURN_MESSAGE', (message) => {
                 console.log('Received message:', message);
                 addMessageToChat(message);
-                // Ẩn typing indicator khi có tin nhắn mới
                 hideTypingIndicator();
             });
 
@@ -665,7 +768,7 @@
             }
         }
 
-        function addMessageToChat(message) {
+        function addMessageToChat(message, prepend = false) {
             const messagesContainer = document.getElementById('chatMessages');
             const noMessages = messagesContainer.querySelector('.no-messages');
             if (noMessages) {
@@ -673,8 +776,16 @@
             }
 
             const messageEl = createMessageElement(message);
-            messagesContainer.appendChild(messageEl);
-            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            
+            if (prepend) {
+                // Thêm vào đầu danh sách (sau load more indicator)
+                const loadMoreIndicator = document.getElementById('loadMoreIndicator');
+                messagesContainer.insertBefore(messageEl, loadMoreIndicator.nextSibling);
+            } else {
+                // Thêm vào cuối danh sách
+                messagesContainer.appendChild(messageEl);
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            }
         }
 
         function createMessageElement(message) {
@@ -732,13 +843,12 @@
             const messageData = {
                 senderId: currentUser._id,
                 content: content,
-                images: [] // TODO: Handle image upload
+                images: []
             };
 
             socket.emit('USER_SEND_MESSAGE', messageData);
             messageInput.value = '';
             
-            // Ngừng typing khi gửi tin nhắn
             sendTypingStatus(false);
         }
 
@@ -759,7 +869,6 @@
         }
 
         function handleTypingIndicator(data) {
-            // Không hiển thị typing của chính mình
             if (data.userId === currentUser._id) return;
             
             const typingIndicator = document.getElementById('typingIndicator');
@@ -779,16 +888,13 @@
         }
 
         function handleInputTyping() {
-            // Gửi typing = true khi bắt đầu gõ
             if (!isTyping) {
                 isTyping = true;
                 sendTypingStatus(true);
             }
             
-            // Clear timeout cũ
             clearTimeout(typingTimeout);
             
-            // Set timeout mới - sau 2 giây không gõ thì ngừng typing
             typingTimeout = setTimeout(() => {
                 isTyping = false;
                 sendTypingStatus(false);
@@ -803,6 +909,7 @@
             deleteCookie('userId');
             showScreen('loginScreen');
         }
+
         // Initialize app
         async function init() {
             showScreen('loadingScreen');
@@ -822,7 +929,6 @@
                     currentUser = profileData.data;
                     setCookie('userId', currentUser._id);
                     
-                    // Kiểm tra có roomChatId không
                     if (profileData.data.roomChatId) {
                         roomChatId = profileData.data.roomChatId;
                         console.log('RoomChatId found:', roomChatId);
@@ -854,26 +960,49 @@
             // Show chat screen first
             showScreen('chatScreen');
 
-            // Load messages
+            // Reset lazy loading variables
+            isLoadingMore = false;
+            hasMoreMessages = true;
+            oldestMessageTime = null;
+
+            // Load initial messages
             try {
                 const messagesData = await getMessages();
-                console.log('Messages data:', messagesData);
+                console.log('Initial messages data:', messagesData);
                 
                 const messagesContainer = document.getElementById('chatMessages');
-                messagesContainer.innerHTML = '';
+                messagesContainer.innerHTML = '<div class="load-more-indicator" id="loadMoreIndicator"><div class="mini-spinner"></div><span>Đang tải tin nhắn cũ...</span></div>';
                 
                 if (messagesData.data && messagesData.data.messages && messagesData.data.messages.length > 0) {
-                    messagesData.data.messages.forEach(message => {
+                    const initialMessages = messagesData.data.messages;
+                    
+                    // Set oldest message time for lazy loading
+                    if (initialMessages.length > 0) {
+                        oldestMessageTime = initialMessages[0].sentAt;
+                    }
+                    
+                    // Check if there might be more messages
+                    if (initialMessages.length < 20) {
+                        hasMoreMessages = false;
+                    }
+                    
+                    // Add messages to chat
+                    initialMessages.forEach(message => {
                         addMessageToChat(message);
                     });
                 } else {
-                    messagesContainer.innerHTML = '<div class="no-messages">Chưa có tin nhắn nào</div>';
+                    messagesContainer.innerHTML = '<div class="load-more-indicator" id="loadMoreIndicator"><div class="mini-spinner"></div><span>Đang tải tin nhắn cũ...</span></div><div class="no-messages">Chưa có tin nhắn nào</div>';
+                    hasMoreMessages = false;
                 }
             } catch (error) {
-                console.error('Error loading messages:', error);
+                console.error('Error loading initial messages:', error);
                 const messagesContainer = document.getElementById('chatMessages');
-                messagesContainer.innerHTML = '<div class="no-messages">Chưa có tin nhắn nào</div>';
+                messagesContainer.innerHTML = '<div class="load-more-indicator" id="loadMoreIndicator"><div class="mini-spinner"></div><span>Đang tải tin nhắn cũ...</span></div><div class="no-messages">Chưa có tin nhắn nào</div>';
+                hasMoreMessages = false;
             }
+
+            // Setup scroll listener for lazy loading
+            setupScrollListener();
 
             // Initialize socket
             initializeSocket();
@@ -895,7 +1024,6 @@
                 
                 try {
                     await login(email, password);
-                    // Sau khi đăng nhập thành công, khởi tạo ứng dụng
                     await init();
                 } catch (error) {
                     showError(error.message || 'Đăng nhập thất bại');
