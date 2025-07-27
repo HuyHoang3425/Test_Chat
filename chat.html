@@ -803,7 +803,6 @@
             deleteCookie('userId');
             showScreen('loginScreen');
         }
-
         // Initialize app
         async function init() {
             showScreen('loadingScreen');
@@ -819,8 +818,8 @@
                 const profileData = await getProfile();
                 console.log('Profile data:', profileData);
                 
-                if (profileData.data && profileData.data.userObj) {
-                    currentUser = profileData.data.userObj;
+                if (profileData.data && profileData.data) {
+                    currentUser = profileData.data;
                     setCookie('userId', currentUser._id);
                     
                     // Kiểm tra có roomChatId không
